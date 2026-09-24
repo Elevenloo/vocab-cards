@@ -500,7 +500,7 @@ function parseText(text){
 /* ============================================================
    學習邏輯
    ============================================================ */
-let Q=[],qi=0,flipped=false,queueMode='all';
+let Q=[],qi=0,flipped=false,queueMode='all',hist=[];
 function startQueue(mode){
   const all=DB.cards;
   let pool;
@@ -509,7 +509,7 @@ function startQueue(mode){
   else pool=all.slice();
   if(!pool.length){renderStudy();return;}
   Q=cfg().shuffle?pool.slice().sort(()=>Math.random()-0.5):pool.slice();
-  qi=0;queueMode=mode;flipped=false;
+  qi=0;queueMode=mode;flipped=false;hist=[];
   renderStudy();
 }
 function renderStudy(){
@@ -547,6 +547,7 @@ function renderStudy(){
       <button class="bigbtn ok" id="bOk">✓ 學識</button>
       <button class="bigbtn no" id="bNo">✗ 未識</button>
     </div>
+    ${hist.length?`<button class="btn wide" id="bUndo" style="margin-top:10px;border-style:dashed;color:var(--warn);border-color:rgba(255,176,32,.4);background:rgba(255,176,32,.08)">↩ 撥錯？返去「${esc(((DB.cards.find(x=>x.id===hist[hist.length-1].id))||{}).en||'上一張')}」</button>`:''}
     <div style="text-align:center;margin-top:12px">
       <button class="btn sm" onclick="flipCard()">🔄 翻牌</button>
       <button class="btn sm" onclick="startQueue('${queueMode}')">🔀 重新開始</button>
@@ -568,11 +569,12 @@ function renderDone(){
       </div>
       ${no>0?`<button class="btn primary wide" style="margin-bottom:8px" onclick="startQueue('un')">🔁 淨係再練未識嘅（${un}）</button>`:''}
       <button class="btn wide" onclick="startQueue('all')">🔀 全部再嚟一次</button>
+      ${hist.length?`<button class="btn wide" style="margin-top:8px;border-style:dashed;color:var(--warn);border-color:rgba(255,176,32,.4);background:rgba(255,176,32,.08)" onclick="undo()">↩ 最後嗰張撥錯咗，返轉頭</button>`:''}
       <div class="sep"></div>
       <button class="btn sm" onclick="go('list')">去詞庫睇吓</button>
     </div>`;
 }
-function quitQueue(){Q=[];qi=0;renderStudy();}
+function quitQueue(){Q=[];qi=0;hist=[];renderStudy();}
 
 function bindCard(c){
   const deck=$('#deck'),card=$('#card'),stOk=$('#stOk'),stNo=$('#stNo');
@@ -613,6 +615,7 @@ function bindCard(c){
   });
   $('#bOk').onclick=()=>answer(1,c);
   $('#bNo').onclick=()=>answer(0,c);
+  const ub=$('#bUndo'); if(ub) ub.onclick=undo;
 }
 function flip(){
   flipped=!flipped;
@@ -623,6 +626,9 @@ function flip(){
 }
 function flipCard(){flip();}
 function answer(ok,c){
+  // 記低答之前嘅狀態，用嚟還原（撥錯可以返轉頭）
+  hist.push({id:c.id,ok:c.ok,seen:c.seen||0,r:c.r||0,w:c.w||0});
+  if(hist.length>200)hist.shift();
   c.seen=(c.seen||0)+1;
   if(ok){c.ok=1;c.r=(c.r||0)+1;}else{c.ok=0;c.w=(c.w||0)+1;}
   save();
@@ -635,6 +641,24 @@ function answer(ok,c){
   toast(ok?'✅ 學識咗':'📌 標記為未識，之後再練');
   setTimeout(()=>{qi++;flipped=false;renderStudy();},200);
 }
+
+/* ↩ 撥錯返轉頭：還原上一張卡嘅狀態，重新學過 */
+function undo(){
+  if(!hist.length){ toast('未撥過卡，冇得返轉頭'); return; }
+  const h=hist.pop();
+  const c=DB.cards.find(x=>x.id===h.id);
+  if(c){ c.ok=h.ok; c.seen=h.seen; c.r=h.r; c.w=h.w; }
+  save();
+  // 退返去嗰張卡嘅位置
+  let idx=Q.findIndex(x=>x.id===h.id);
+  if(idx<0){ idx=Math.max(0,qi-1); }
+  qi=idx; flipped=false;
+  renderStudy();
+  upd();
+  const nm=(c&&c.en)||'上一張';
+  toast('↩ 返返去「'+nm+'」，再學過');
+}
+function canUndo(){ return hist.length>0; }
 
 /* ============================================================
    詞庫列表
@@ -924,7 +948,7 @@ $('#btnDemo').onclick=()=>{
 };
 $('#btnWipe').onclick=()=>{
   if(!confirm('肯定要剷晒全部單詞？剷咗冇得返轉頭。'))return;
-  DB.cards=[];Q=[];qi=0;save();renderList();renderStudy();upd();toast('已清空');
+  DB.cards=[];Q=[];qi=0;hist=[];save();renderList();renderStudy();upd();toast('已清空');
 };
 function dl(name,txt,type){
   const b=new Blob([txt],{type}),u=URL.createObjectURL(b),a=document.createElement('a');
@@ -1031,6 +1055,8 @@ document.addEventListener('keydown',e=>{
   if(e.key==='ArrowLeft'&&Q[qi])$('#bOk')?.click();
   if(e.key==='ArrowRight'&&Q[qi])$('#bNo')?.click();
   if(e.key===' '){e.preventDefault();flip();}
+  // ↩ 返轉頭：↑ / U / Backspace
+  if(e.key==='ArrowUp'||e.key==='u'||e.key==='U'||e.key==='Backspace'){e.preventDefault();undo();}
 });
 
 /* ---------- init ---------- */
