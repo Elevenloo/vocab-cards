@@ -211,6 +211,8 @@ textarea{resize:vertical;line-height:1.65;font-size:14px}
 .bar{width:38px;height:4px;border-radius:99px;background:var(--line);margin:0 auto 12px}
 .loader{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:99px;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
+.studybar{display:flex;gap:8px;margin-bottom:12px}
+.studybar .btn{flex:1;padding:10px 6px}
 </style>
 </head>
 <body>
@@ -228,6 +230,11 @@ textarea{resize:vertical;line-height:1.65;font-size:14px}
 <main>
   <!-- ============ STUDY ============ -->
   <section class="view on" id="v-study">
+    <div class="studybar" id="studyBar">
+      <button class="btn sm primary" id="btnRefresh">🔄 刷新（載入啱啱加嘅詞）</button>
+      <button class="btn sm" id="btnStartUn">▶️ 淨係練未識</button>
+      <button class="btn sm" id="btnVer" style="flex:0 0 auto;padding:10px 8px;color:var(--dim2);font-size:11px"></button>
+    </div>
     <div id="studyArea"></div>
   </section>
 
@@ -328,6 +335,7 @@ textarea{resize:vertical;line-height:1.65;font-size:14px}
    數據結構: {v:1, cards:[{id,en,zh,ok:0|1,seen,r,w}], cfg:{...}}
    ============================================================ */
 const LS='vocabcards_v1';
+const VERSION='v3';
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const uid=()=>Math.random().toString(36).slice(2,9);
@@ -538,8 +546,38 @@ function afterCards(newIds){
   }
   renderStudy();renderList();upd();
 }
+/* 🔄 刷新：把詞庫入面「未喺今輪隊列」嘅卡載入嚟學 */
+function refreshStudy(silent){
+  if(!DB.cards.length){ renderStudy(); if(!silent)toast('詞庫仲係空嘅'); return; }
+  cleanQueue();
+  const inQ=new Set(Q.map(c=>c.id));
+  const missing=DB.cards.filter(c=>!inQ.has(c.id));
+  const inProgress = Q.length>0 && qi<Q.length;   // 仲未撚完今輪？
+  let added=0;
+  if(missing.length){
+    let arr=missing.slice();
+    if(cfg().shuffle)arr=arr.sort(()=>Math.random()-0.5);
+    if(inProgress){ Q=Q.concat(arr); }            // 學緊 → 排落隊尾，唔打斷
+    else { Q=arr; qi=0; }                          // 冇輪進行中 → 直接由第一張開始
+    added=arr.length;
+  }else if(!inProgress && Q.length){
+    qi=0;                                          // 冇新詞但上輪已完 → 由頭再嚟
+  }
+  flipped=false;hist=[];
+  save();renderStudy();renderList();upd();
+  const u=DB.cards.filter(c=>!c.ok).length;
+  if($('#btnStartUn'))$('#btnStartUn').textContent='▶️ 淨係練未識 ('+u+')';
+  if(!silent){
+    if(added)toast('🔄 已載入 '+added+' 個詞，而家共 '+Q.length+' 張卡');
+    else if(inProgress)toast('🔄 冇新詞要載入，而家共 '+Q.length+' 張卡');
+    else toast('🔄 由第一張開始，共 '+Q.length+' 張卡');
+  }
+}
+
 function renderStudy(){
   const a=$('#studyArea');
+  const bar=$('#studyBar');
+  if(bar)bar.style.display='flex';   // 常駐，空詞庫都顯示，方便隨時撳
   if(!DB.cards.length){
     Q=[];qi=0;hist=[];
     a.innerHTML=`<div class="empty"><div class="em">🃏</div>
@@ -910,6 +948,7 @@ $('#btnImport').onclick=()=>{
   afterCards(ids);
   toast(`已加入 ${n} 個（新增 ${nw}）`);
   go('study');
+  refreshStudy(true);      // 直接載入啱啱加嘅詞，唔使再撳
 };
 $('#btnAiFix').onclick=async()=>{
   if(!hasAI())return sheetCfg('要整理格式，先喺設定填 API Key');
@@ -1053,6 +1092,7 @@ function sheetCfg(msg){
       · Gemini：aistudio.google.com → Get API key（有免費額度）<br>
       · 唔想申請：直接留空，照樣可以用本地 OCR＋免費翻譯。<br>
       Key 淨係儲喺你自己瀏覽器，唔會傳去任何其他地方。
+      <div style="margin-top:10px;color:var(--dim2)">版本 ${VERSION}　·　見到呢個就係最新檔</div>
     </div>`);
   $('#sProv').onchange=()=>{
     const v=$('#sProv').value;
@@ -1099,7 +1139,19 @@ function go(v){
   $$('nav.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   window.scrollTo(0,0);
 }
-$$('nav.tabs button').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$$('nav.tabs button').forEach(b=>b.onclick=()=>{
+  go(b.dataset.v);
+  if(b.dataset.v==='study'&&$('#btnStartUn')){
+    const un=DB.cards.filter(c=>!c.ok).length;
+    $('#btnStartUn').textContent='▶️ 淨係練未識 ('+un+')';
+  }
+});
+$('#btnRefresh').onclick=()=>refreshStudy();
+$('#btnStartUn').onclick=()=>{
+  const un=DB.cards.filter(c=>!c.ok).length;
+  if(!un)return toast('全部都學識晒啦 🎉');
+  startQueue('un');
+};
 function upd(){
   const t=DB.cards.length,ok=DB.cards.filter(c=>c.ok).length,un=t-ok;
   $('#hstats').innerHTML=
@@ -1108,6 +1160,8 @@ function upd(){
     `<span class="chip no">未識 <b>${un}</b></span>`;
   const pct=t?ok/t*100:0;
   $('#prog').style.width=pct+'%';
+  const bu=$('#btnStartUn');
+  if(bu)bu.textContent='▶️ 淨係練未識 ('+un+')';
 }
 document.addEventListener('keydown',e=>{
   if($('#modal').classList.contains('on')||document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='TEXTAREA')return;
@@ -1123,6 +1177,8 @@ document.addEventListener('keydown',e=>{
 $('#ocrLang').value=cfg().ocrLang||'eng';
 $('#ocrLang').onchange=()=>{cfg().ocrLang=$('#ocrLang').value;save();};
 renderList();renderStudy();upd();
+$('#btnVer').textContent=VERSION;
+$('#btnVer').onclick=()=>toast('版本 '+VERSION+'　·　有「🔄 刷新」掣就係最新檔',3000);
 if(!hasAI())$('#ocrNote').innerHTML='目前模式：<span class="badge">本地 OCR（免費）</span>　想更準可以喺右上角 ⚙️ 填 API Key';
 else $('#ocrNote').innerHTML='目前模式：<span class="badge o">AI 視覺識別</span>';
 
