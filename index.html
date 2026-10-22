@@ -500,27 +500,56 @@ function parseText(text){
 /* ============================================================
    學習邏輯
    ============================================================ */
-let Q=[],qi=0,flipped=false,queueMode='all',hist=[];
+let Q=[],qi=0,flipped=false,queueMode='all',hist=[],busy=false;
+/* 清走已經被剷除嘅卡，同埋夾返好指標 */
+function cleanQueue(){
+  const alive=new Set(DB.cards.map(c=>c.id));
+  Q=Q.filter(c=>alive.has(c.id));
+  if(qi>Q.length)qi=Q.length;
+  if(qi<0)qi=0;
+}
 function startQueue(mode){
   const all=DB.cards;
   let pool;
   if(mode==='un')pool=all.filter(c=>!c.ok);
   else if(mode==='ok')pool=all.filter(c=>c.ok);
   else pool=all.slice();
-  if(!pool.length){renderStudy();return;}
+  if(!pool.length){ Q=[];qi=0;hist=[];flipped=false; renderStudy();return; }
   Q=cfg().shuffle?pool.slice().sort(()=>Math.random()-0.5):pool.slice();
   qi=0;queueMode=mode;flipped=false;hist=[];
   renderStudy();
 }
+/* 詞庫有變動之後：清垃圾、插入新卡、刷新畫面 */
+function afterCards(newIds){
+  cleanQueue();
+  const ids=(newIds||[]).filter(Boolean);
+  const inProgress=Q.length>0&&qi<Q.length;
+  if(ids.length&&!inProgress){
+    // 冇輪進行中（剷啱開始 / 上一輪已完）→ 直接開一輪，新卡一定係未識所以會入圍
+    save();renderList();
+    startQueue(DB.cards.some(c=>!c.ok)?'un':'all');
+    upd();return;
+  }
+  if(ids.length&&inProgress){
+    // 進行中 → 新卡排落今輪尾，唔會打斷而家呢張
+    let arr=ids.map(id=>DB.cards.find(c=>c.id===id)).filter(Boolean);
+    if(cfg().shuffle)arr=arr.sort(()=>Math.random()-0.5);
+    Q=Q.concat(arr);
+  }
+  renderStudy();renderList();upd();
+}
 function renderStudy(){
   const a=$('#studyArea');
   if(!DB.cards.length){
+    Q=[];qi=0;hist=[];
     a.innerHTML=`<div class="empty"><div class="em">🃏</div>
       <div style="font-weight:700;margin-bottom:6px">詞庫仲係空嘅</div>
       <div style="font-size:13.5px">去「📷 匯入」影張相等單詞自動入庫，<br>或者去「📚 詞庫」手打。</div>
       <div style="margin-top:16px"><button class="btn primary" onclick="go('import')">去匯入</button></div></div>`;
     upd();return;
   }
+  cleanQueue();
+  if(!Q.length){ renderIdle(); upd(); return; }   // 有詞但未開始一輪
   if(qi>=Q.length){renderDone();upd();return;}
   const c=Q[qi];
   const face=cfg().face;
@@ -555,6 +584,25 @@ function renderStudy(){
     </div>`;
   bindCard(c);
   upd();
+}
+/* 有詞但仲未開始一輪 → 開始頁（唔好再顯示「0 張卡完成」） */
+function renderIdle(){
+  const un=DB.cards.filter(c=>!c.ok).length;
+  const ok=DB.cards.filter(c=>c.ok).length;
+  $('#studyArea').innerHTML=`
+    <div class="done">
+      <h3>🎯 準備好未？</h3>
+      <p>詞庫有 ${DB.cards.length} 個單詞</p>
+      <div class="ring">
+        <div><b style="color:var(--no)">${un}</b>未識</div>
+        <div><b style="color:var(--ok)">${ok}</b>學識</div>
+      </div>
+      ${un?`<button class="btn primary wide" style="margin-bottom:8px" onclick="startQueue('un')">▶️ 開始練未識嘅（${un}）</button>`:''}
+      <button class="btn wide" onclick="startQueue('all')">🔀 全部練一次（${DB.cards.length}）</button>
+      <div class="note" style="text-align:left;margin-top:14px">
+        👆 撳卡翻去中文　·　⬅ 撥左 = 學識　·　撥右 ➡ = 未識
+      </div>
+    </div>`;
 }
 function renderDone(){
   const ok=Q.filter(c=>c.ok).length,no=Q.length-ok;
@@ -626,6 +674,7 @@ function flip(){
 }
 function flipCard(){flip();}
 function answer(ok,c){
+  if(busy)return; busy=true;                 // 防連點重複提交
   // 記低答之前嘅狀態，用嚟還原（撥錯可以返轉頭）
   hist.push({id:c.id,ok:c.ok,seen:c.seen||0,r:c.r||0,w:c.w||0});
   if(hist.length>200)hist.shift();
@@ -639,17 +688,19 @@ function answer(ok,c){
     card.style.opacity=0;
   }
   toast(ok?'✅ 學識咗':'📌 標記為未識，之後再練');
-  setTimeout(()=>{qi++;flipped=false;renderStudy();},200);
+  setTimeout(()=>{qi++;flipped=false;busy=false;renderStudy();},200);
 }
 
 /* ↩ 撥錯返轉頭：還原上一張卡嘅狀態，重新學過 */
 function undo(){
+  if(busy)return;
   if(!hist.length){ toast('未撥過卡，冇得返轉頭'); return; }
   const h=hist.pop();
   const c=DB.cards.find(x=>x.id===h.id);
   if(c){ c.ok=h.ok; c.seen=h.seen; c.r=h.r; c.w=h.w; }
   save();
   // 退返去嗰張卡嘅位置
+  cleanQueue();
   let idx=Q.findIndex(x=>x.id===h.id);
   if(idx<0){ idx=Math.max(0,qi-1); }
   qi=idx; flipped=false;
@@ -703,7 +754,7 @@ function editCard(id){
   $('#eSave').onclick=()=>{
     const en=$('#eEn').value.trim(),zh=$('#eZh').value.trim();
     if(!en)return toast('英文唔可以空');
-    c.en=en;c.zh=zh;save();closeSheet();renderList();upd();toast('已更新');
+    c.en=en;c.zh=zh;save();closeSheet();afterCards([]);toast('已更新');
   };
   $('#eTr').onclick=async()=>{
     if(!c.en)return;
@@ -712,11 +763,11 @@ function editCard(id){
     $('#eTr').textContent='🔤 重新翻譯';
     if(r[0]){$('#eZh').value=r[0];toast('翻譯完成');}else toast('翻唔到，自己打啦');
   };
-  $('#eTog').onclick=()=>{c.ok=c.ok?0:1;save();closeSheet();renderList();upd();};
+  $('#eTog').onclick=()=>{c.ok=c.ok?0:1;save();closeSheet();afterCards([]);};
   $('#eDel').onclick=()=>{delCard(id);closeSheet();};
 }
 function delCard(id){
-  DB.cards=DB.cards.filter(c=>c.id!==id);save();renderList();upd();toast('已剷除');
+  DB.cards=DB.cards.filter(c=>c.id!==id);save();afterCards([]);toast('已剷除');
 }
 
 /* ============================================================
@@ -848,17 +899,17 @@ function commitPairs(pairs){
 $('#btnImport').onclick=()=>{
   const pairs=parseText($('#preview').value);
   if(!pairs.length)return toast('冇嘢可以加');
-  let n=0,nw=0;
+  let n=0,nw=0;const ids=[];
   pairs.forEach(p=>{
     if(!p.en)return;
     const ex=DB.cards.find(c=>c.en.toLowerCase()===p.en.toLowerCase());
     if(ex){ if(p.zh){ex.zh=p.zh;} }
-    else { DB.cards.push({id:uid(),en:p.en,zh:p.zh||'',ok:0,seen:0,r:0,w:0}); nw++; }
+    else { const id=uid(); DB.cards.push({id,en:p.en,zh:p.zh||'',ok:0,seen:0,r:0,w:0}); ids.push(id); nw++; }
     n++;
   });
-  save();renderList();upd();
+  afterCards(ids);
   toast(`已加入 ${n} 個（新增 ${nw}）`);
-  go('list');
+  go('study');
 };
 $('#btnAiFix').onclick=async()=>{
   if(!hasAI())return sheetCfg('要整理格式，先喺設定填 API Key');
@@ -901,10 +952,12 @@ $('#btnAdd').onclick=async()=>{
     const r=await translate([en]);zh=r[0]||'';$('#trState').innerHTML='';
   }
   const ex=DB.cards.find(c=>c.en.toLowerCase()===en.toLowerCase());
+  let nid=null;
   if(ex){ex.zh=zh||ex.zh;}
-  else DB.cards.push({id:uid(),en,zh,ok:0,seen:0,r:0,w:0});
-  save();$('#nEn').value='';$('#nZh').value='';
-  renderList();upd();toast('已加入詞庫');
+  else { nid=uid(); DB.cards.push({id:nid,en,zh,ok:0,seen:0,r:0,w:0}); }
+  $('#nEn').value='';$('#nZh').value='';
+  afterCards(nid?[nid]:[]);
+  toast(ex?'已更新中文':'已加入詞庫');
 };
 $('#nEn').addEventListener('keydown',e=>{if(e.key==='Enter')$('#btnAdd').click();});
 $('#nZh').addEventListener('keydown',e=>{if(e.key==='Enter')$('#btnAdd').click();});
@@ -930,9 +983,13 @@ $('#fileJson').onchange=e=>{
       const d=JSON.parse(rd.result);
       if(!Array.isArray(d.cards))throw 0;
       const map=new Map(DB.cards.map(c=>[c.en.toLowerCase(),c]));
-      d.cards.forEach(c=>{ if(c&&c.en&&!map.has(String(c.en).toLowerCase()))
-        DB.cards.push({id:uid(),en:String(c.en),zh:String(c.zh||''),ok:c.ok?1:0,seen:c.seen||0,r:c.r||0,w:c.w||0}); });
-      save();renderList();upd();toast('匯入完成');
+      const ids=[];
+      d.cards.forEach(c=>{ if(c&&c.en&&!map.has(String(c.en).toLowerCase())){
+        const id=uid();
+        DB.cards.push({id,en:String(c.en),zh:String(c.zh||''),ok:c.ok?1:0,seen:c.seen||0,r:c.r||0,w:c.w||0});
+        ids.push(id);
+      } });
+      afterCards(ids);toast('匯入完成');
     }catch(err){toast('檔案格式唔啱');}
   };
   rd.readAsText(f);e.target.value='';
@@ -943,8 +1000,11 @@ $('#btnDemo').onclick=()=>{
     ['implement','實行；推行'],['justify','證明…正當'],['maintain','維持；保養'],['negotiate','談判；商議'],
     ['obtain','獲得'],['phenomenon','現象'],['reluctant','不情願的'],['significant','重大的；顯著的'],
     ['tremendous','巨大的'],['urban','城市的'],['validate','證實；確認'],['withstand','承受；抵受']];
-  demo.forEach(([en,zh])=>{ if(!DB.cards.find(c=>c.en.toLowerCase()===en))DB.cards.push({id:uid(),en,zh,ok:0,seen:0,r:0,w:0}); });
-  save();renderList();upd();toast('示例已載入');
+  const ids=[];
+  demo.forEach(([en,zh])=>{ if(!DB.cards.find(c=>c.en.toLowerCase()===en)){
+    const id=uid(); DB.cards.push({id,en,zh,ok:0,seen:0,r:0,w:0}); ids.push(id);
+  } });
+  afterCards(ids);toast('示例已載入');
 };
 $('#btnWipe').onclick=()=>{
   if(!confirm('肯定要剷晒全部單詞？剷咗冇得返轉頭。'))return;
